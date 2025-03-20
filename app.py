@@ -9,18 +9,20 @@ import yfinance as yf
 app = Flask(__name__)
 CORS(app)
 
-# Load Firebase credentials from Render environment variable
-firebase_credentials = json.loads(os.getenv("FIREBASE_CREDENTIALS"))
+# ✅ Load Firebase credentials from Render environment variable
+firebase_credentials = os.getenv("FIREBASE_CREDENTIALS")
 
-# Initialize Firebase Admin SDK
-cred = credentials.Certificate(firebase_credentials)
-firebase_admin.initialize_app(cred)
-
-db = firestore.client()
+if firebase_credentials:
+    cred_dict = json.loads(firebase_credentials)  # ✅ Convert string to JSON
+    cred = credentials.Certificate(cred_dict)
+    firebase_admin.initialize_app(cred)
+    db = firestore.client()
+else:
+    raise ValueError("🚨 FIREBASE_CREDENTIALS environment variable is missing!")
 
 @app.route('/')
 def home():
-    return "Market Indices API with Firestore is Running!"
+    return "✅ Market Indices API with Firestore is Running!"
 
 @app.route('/update-market-indices')
 def update_market_indices():
@@ -47,10 +49,6 @@ def update_market_indices():
             prev_close = history["Close"].iloc[-2]
             current_price = history["Close"].iloc[-1]
 
-            if prev_close is None or current_price is None:
-                index_data[name] = {"current_price": "N/A", "percent_change": "N/A"}
-                continue
-
             percent_change = ((current_price - prev_close) / prev_close) * 100 if prev_close != 0 else 0
 
             index_data[name] = {
@@ -59,10 +57,10 @@ def update_market_indices():
                 "previous_close": round(prev_close, 2)
             }
 
-            # Store in Firestore
-            db.collection("market_indices").document(name).set(index_data)
+            # ✅ Store only {name: {data}}
+            db.collection("market_indices").document(name).set(index_data[name])
 
-        return jsonify({"message": "Market indices updated successfully", "data": index_data})
+        return jsonify({"message": "✅ Market indices updated successfully", "data": index_data})
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
