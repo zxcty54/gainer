@@ -1,5 +1,7 @@
 import os
 import json
+import threading
+import time
 import firebase_admin
 from firebase_admin import credentials, firestore
 from flask import Flask, jsonify
@@ -20,48 +22,61 @@ if firebase_credentials:
 else:
     raise ValueError("🚨 FIREBASE_CREDENTIALS environment variable is missing!")
 
+# ✅ Market Indices to Fetch
+INDICES = {
+    "Dow Jones": "^DJI",
+    "S&P 500": "^GSPC",
+    "NASDAQ": "^IXIC",
+    "NIFTY 50": "^NSEI",
+    "SENSEX": "^BSESN",
+    "BANK NIFTY": "^NSEBANK"
+}
+
+# ✅ Background Task: Update Firestore Every 15 Seconds
+def update_market_data():
+    while True:
+        try:
+            index_data = {}
+            for name, symbol in INDICES.items():
+                stock = yf.Ticker(symbol)
+                history = stock.history(period="2d")  # Get the last 2 days of data
+
+                if history.empty or len(history) < 2:
+                    index_data[name] = {"current_price": "N/A", "percent_change": "N/A"}
+                    continue
+
+                prev_close = history["Close"].iloc[-2]
+                current_price = history["Close"].iloc[-1]
+                percent_change = ((current_price - prev_close) / prev_close) * 100 if prev_close != 0 else 0
+
+                index_data[name] = {
+                    "current_price": round(current_price, 2),
+                    "percent_change": round(percent_change, 2),
+                    "previous_close": round(prev_close, 2)
+                }
+
+                # ✅ Store in Firestore
+                db.collection("market_indices").document(name).set(index_data[name])
+
+            print("✅ Market data updated in Firestore:", index_data)
+
+        except Exception as e:
+            print("❌ Error updating market data:", str(e))
+
+        time.sleep(15)  # ✅ Wait 15 seconds before next update
+
+# ✅ Start the background thread
+threading.Thread(target=update_market_data, daemon=True).start()
+
 @app.route('/')
 def home():
     return "✅ Market Indices API with Firestore is Running!"
 
 @app.route('/update-market-indices')
-def update_market_indices():
+def manual_update():
     try:
-        indices = {
-            "Dow Jones": "^DJI",
-            "S&P 500": "^GSPC",
-            "NASDAQ": "^IXIC",
-            "NIFTY 50": "^NSEI",
-            "SENSEX": "^BSESN",
-            "BANK NIFTY": "^NSEBANK"
-        }
-
-        index_data = {}
-
-        for name, symbol in indices.items():
-            stock = yf.Ticker(symbol)
-            history = stock.history(period="2d")  
-
-            if history.empty or len(history) < 2:
-                index_data[name] = {"current_price": "N/A", "percent_change": "N/A"}
-                continue
-
-            prev_close = history["Close"].iloc[-2]
-            current_price = history["Close"].iloc[-1]
-
-            percent_change = ((current_price - prev_close) / prev_close) * 100 if prev_close != 0 else 0
-
-            index_data[name] = {
-                "current_price": round(current_price, 2),
-                "percent_change": round(percent_change, 2),
-                "previous_close": round(prev_close, 2)
-            }
-
-            # ✅ Store only {name: {data}}
-            db.collection("market_indices").document(name).set(index_data[name])
-
-        return jsonify({"message": "✅ Market indices updated successfully", "data": index_data})
-
+        update_market_data()  # Call the update function manually
+        return jsonify({"message": "✅ Market indices updated successfully!"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
