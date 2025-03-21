@@ -7,7 +7,6 @@ from firebase_admin import credentials, firestore
 from flask import Flask, jsonify
 from flask_cors import CORS
 import yfinance as yf
-import schedule  # Install with 'pip install schedule'
 
 app = Flask(__name__)
 CORS(app)
@@ -16,7 +15,7 @@ CORS(app)
 firebase_credentials = os.getenv("FIREBASE_CREDENTIALS")
 
 if firebase_credentials:
-    cred_dict = json.loads(firebase_credentials)  # ✅ Convert string to JSON
+    cred_dict = json.loads(firebase_credentials)
     cred = credentials.Certificate(cred_dict)
     firebase_admin.initialize_app(cred)
     db = firestore.client()
@@ -33,23 +32,25 @@ INDICES = {
     "BANK NIFTY": "^NSEBANK"
 }
 
-# ✅ Fetch all indices in one API call every 5 minutes
+# ✅ Reduce API Calls (Batch Request)
 def update_market_data():
     try:
-        tickers = list(INDICES.values())  # Get all ticker symbols
-        stock_data = yf.download(tickers, period="2d", group_by='ticker')  # ✅ Batch API request
+        tickers = list(INDICES.values())
+        data = yf.download(tickers, period="2d", group_by="ticker", auto_adjust=True, progress=False)
+
+        if data.empty:
+            print("❌ No data retrieved from Yahoo Finance")
+            return
 
         index_data = {}
 
         for name, symbol in INDICES.items():
-            if symbol not in stock_data:
-                print(f"❌ No data for {name}")
+            if symbol not in data:
+                print(f"❌ No data for {name} ({symbol})")
                 continue
 
-            history = stock_data[symbol]["Close"]
-
-            if history.empty or len(history) < 2:
-                index_data[name] = {"current_price": "N/A", "percent_change": "N/A"}
+            history = data[symbol]["Close"]
+            if len(history) < 2:
                 continue
 
             prev_close = history.iloc[-2]
@@ -62,25 +63,18 @@ def update_market_data():
                 "previous_close": round(prev_close, 2)
             }
 
-            # ✅ Store in Firestore
             db.collection("market_indices").document(name).set(index_data[name])
 
-        print("✅ Market data updated in Firestore:", index_data)
+        print("✅ Market data updated successfully:", index_data)
 
     except Exception as e:
         print("❌ Error updating market data:", str(e))
 
-# ✅ Schedule batch update every 5 minutes
-schedule.every(5).minutes.do(update_market_data)
+    # ✅ Reduce Frequency (Run Every 5 Minutes Instead of 15s)
+    threading.Timer(300, update_market_data).start()
 
-# ✅ Background Scheduler Loop
-def run_scheduler():
-    while True:
-        schedule.run_pending()
-        time.sleep(10)  # ✅ Check every 10 seconds for scheduled tasks
-
-# ✅ Start scheduler in a separate thread
-threading.Thread(target=run_scheduler, daemon=True).start()
+# ✅ Start Background Update Task
+update_market_data()
 
 @app.route('/')
 def home():
@@ -89,7 +83,7 @@ def home():
 @app.route('/update-market-indices')
 def manual_update():
     try:
-        update_market_data()  # Call the update function manually
+        update_market_data()
         return jsonify({"message": "✅ Market indices updated successfully!"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
