@@ -7,6 +7,7 @@ from firebase_admin import credentials, firestore
 from flask import Flask, jsonify
 from flask_cors import CORS
 import yfinance as yf
+import schedule  # Install with 'pip install schedule'
 
 app = Flask(__name__)
 CORS(app)
@@ -32,41 +33,54 @@ INDICES = {
     "BANK NIFTY": "^NSEBANK"
 }
 
-# ✅ Background Task: Update Firestore Every 15 Seconds
+# ✅ Fetch all indices in one API call every 5 minutes
 def update_market_data():
+    try:
+        tickers = list(INDICES.values())  # Get all ticker symbols
+        stock_data = yf.download(tickers, period="2d", group_by='ticker')  # ✅ Batch API request
+
+        index_data = {}
+
+        for name, symbol in INDICES.items():
+            if symbol not in stock_data:
+                print(f"❌ No data for {name}")
+                continue
+
+            history = stock_data[symbol]["Close"]
+
+            if history.empty or len(history) < 2:
+                index_data[name] = {"current_price": "N/A", "percent_change": "N/A"}
+                continue
+
+            prev_close = history.iloc[-2]
+            current_price = history.iloc[-1]
+            percent_change = ((current_price - prev_close) / prev_close) * 100 if prev_close != 0 else 0
+
+            index_data[name] = {
+                "current_price": round(current_price, 2),
+                "percent_change": round(percent_change, 2),
+                "previous_close": round(prev_close, 2)
+            }
+
+            # ✅ Store in Firestore
+            db.collection("market_indices").document(name).set(index_data[name])
+
+        print("✅ Market data updated in Firestore:", index_data)
+
+    except Exception as e:
+        print("❌ Error updating market data:", str(e))
+
+# ✅ Schedule batch update every 5 minutes
+schedule.every(5).minutes.do(update_market_data)
+
+# ✅ Background Scheduler Loop
+def run_scheduler():
     while True:
-        try:
-            index_data = {}
-            for name, symbol in INDICES.items():
-                stock = yf.Ticker(symbol)
-                history = stock.history(period="2d")  # Get the last 2 days of data
+        schedule.run_pending()
+        time.sleep(10)  # ✅ Check every 10 seconds for scheduled tasks
 
-                if history.empty or len(history) < 2:
-                    index_data[name] = {"current_price": "N/A", "percent_change": "N/A"}
-                    continue
-
-                prev_close = history["Close"].iloc[-2]
-                current_price = history["Close"].iloc[-1]
-                percent_change = ((current_price - prev_close) / prev_close) * 100 if prev_close != 0 else 0
-
-                index_data[name] = {
-                    "current_price": round(current_price, 2),
-                    "percent_change": round(percent_change, 2),
-                    "previous_close": round(prev_close, 2)
-                }
-
-                # ✅ Store in Firestore
-                db.collection("market_indices").document(name).set(index_data[name])
-
-            print("✅ Market data updated in Firestore:", index_data)
-
-        except Exception as e:
-            print("❌ Error updating market data:", str(e))
-
-        time.sleep(15)  # ✅ Wait 15 seconds before next update
-
-# ✅ Start the background thread
-threading.Thread(target=update_market_data, daemon=True).start()
+# ✅ Start scheduler in a separate thread
+threading.Thread(target=run_scheduler, daemon=True).start()
 
 @app.route('/')
 def home():
