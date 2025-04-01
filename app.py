@@ -42,24 +42,28 @@ def fetch_index_data(name, symbol, retries=3):
             # Fetch last 2 days of data
             data = yf.download(symbol, period="2d", auto_adjust=True, progress=False)
 
-            if data.empty:
-                print(f"❌ No data for {name} ({symbol})")
-                continue  # Retry
+            # ✅ Ensure Data Exists
+            if data is None or data.empty:
+                print(f"❌ No data found for {name} ({symbol}). Retrying...")
+                continue
 
-            # Extract close prices
-            if "Close" not in data or data["Close"].empty:
-                print(f"⚠️ No Close price data for {name} ({symbol})")
-                continue  # Retry
+            # ✅ Extract Close Prices & Handle NaN
+            if "Close" not in data:
+                print(f"⚠️ 'Close' column missing for {name} ({symbol})")
+                continue
 
-            history = data["Close"].dropna()
+            history = data["Close"].dropna()  # Remove NaN values
 
-            if history.empty or len(history) < 2:
+            # ✅ Ensure We Have At Least 2 Days of Data
+            if len(history) < 2:
                 print(f"⚠️ Insufficient data for {name} ({symbol})")
-                continue  # Retry
+                continue
 
-            # Calculate values
-            prev_close = history.iloc[-2]
-            current_price = history.iloc[-1]
+            # ✅ Extract Prices
+            prev_close = float(history.iloc[-2])
+            current_price = float(history.iloc[-1])
+
+            # ✅ Calculate % Change Safely
             percent_change = ((current_price - prev_close) / prev_close) * 100 if prev_close != 0 else 0
 
             # ✅ Store in Firestore
@@ -67,16 +71,16 @@ def fetch_index_data(name, symbol, retries=3):
                 "current_price": round(current_price, 2),
                 "percent_change": round(percent_change, 2),
                 "previous_close": round(prev_close, 2),
-                "last_updated": firestore.SERVER_TIMESTAMP  # Add timestamp
+                "last_updated": firestore.SERVER_TIMESTAMP  # Timestamp
             }
 
             db.collection("market_indices").document(name).set(index_data)
             print(f"✅ {name} updated successfully: {index_data}")
-            return
+            return  # Exit retry loop
 
         except Exception as e:
             print(f"⚠️ Error fetching {name} ({symbol}): {str(e)}")
-        
+
         time.sleep(2)  # Wait before retrying
 
     print(f"❌ Failed to fetch {name} after {retries} attempts")
