@@ -33,78 +33,69 @@ INDICES = {
     "BANK NIFTY": "^NSEBANK"
 }
 
-# ✅ Fetch Individual Market Data
-def fetch_index_data(name, symbol, retries=3):
-    for attempt in range(retries):
-        try:
-            print(f"🔄 Fetching {name} ({symbol}) - Attempt {attempt + 1}")
+# ✅ Batch Fetch Market Data
+def fetch_all_indices():
+    try:
+        print("🔄 Fetching all market indices in a batch request...")
+        
+        # ✅ Batch Download All Indices
+        data = yf.download(list(INDICES.values()), period="2d", auto_adjust=True, progress=False)
 
-            # Fetch last 2 days of data
-            data = yf.download(symbol, period="2d", auto_adjust=True, progress=False)
+        # ✅ Ensure Data Exists
+        if data.empty:
+            print("❌ No data received from Yahoo Finance!")
+            return
 
-            # ✅ Ensure Data Exists
-            if data is None or data.empty:
-                print(f"❌ No data found for {name} ({symbol}). Retrying...")
-                continue
+        # ✅ Process Each Index
+        for name, symbol in INDICES.items():
+            try:
+                history = data["Close"][symbol].dropna()
 
-            # ✅ Extract Close Prices & Handle NaN
-            if "Close" not in data:
-                print(f"⚠️ 'Close' column missing for {name} ({symbol})")
-                continue
+                # ✅ Ensure at Least 2 Data Points
+                if len(history) < 2:
+                    print(f"⚠️ Insufficient data for {name} ({symbol})")
+                    continue
 
-            history = data["Close"].dropna()  # Remove NaN values
+                # ✅ Extract Prices
+                prev_close = float(history.iloc[-2])
+                current_price = float(history.iloc[-1])
 
-            # ✅ Ensure We Have At Least 2 Days of Data
-            if len(history) < 2:
-                print(f"⚠️ Insufficient data for {name} ({symbol})")
-                continue
+                # ✅ Calculate % Change
+                percent_change = ((current_price - prev_close) / prev_close) * 100 if prev_close != 0 else 0
 
-            # ✅ Extract Prices
-            prev_close = float(history.iloc[-2])
-            current_price = float(history.iloc[-1])
+                # ✅ Store in Firestore
+                index_data = {
+                    "current_price": round(current_price, 2),
+                    "percent_change": round(percent_change, 2),
+                    "previous_close": round(prev_close, 2),
+                    "last_updated": firestore.SERVER_TIMESTAMP
+                }
 
-            # ✅ Calculate % Change Safely
-            percent_change = ((current_price - prev_close) / prev_close) * 100 if prev_close != 0 else 0
+                db.collection("market_indices").document(name).set(index_data)
+                print(f"✅ {name} updated: {index_data}")
 
-            # ✅ Store in Firestore
-            index_data = {
-                "current_price": round(current_price, 2),
-                "percent_change": round(percent_change, 2),
-                "previous_close": round(prev_close, 2),
-                "last_updated": firestore.SERVER_TIMESTAMP  # Timestamp
-            }
+            except Exception as e:
+                print(f"⚠️ Error processing {name} ({symbol}): {str(e)}")
 
-            db.collection("market_indices").document(name).set(index_data)
-            print(f"✅ {name} updated successfully: {index_data}")
-            return  # Exit retry loop
-
-        except Exception as e:
-            print(f"⚠️ Error fetching {name} ({symbol}): {str(e)}")
-
-        time.sleep(2)  # Wait before retrying
-
-    print(f"❌ Failed to fetch {name} after {retries} attempts")
+    except Exception as e:
+        print(f"❌ Batch fetch error: {str(e)}")
 
 # ✅ Update Market Data
 def update_market_data():
-    print("🔄 Updating Market Indices...")
-    for name, symbol in INDICES.items():
-        fetch_index_data(name, symbol)
-    
-    # ✅ Run every 5 minutes
-    threading.Timer(300, update_market_data).start()
+    fetch_all_indices()
+    threading.Timer(300, update_market_data).start()  # Auto-run every 5 minutes
 
 # ✅ Start Background Update Task
 update_market_data()
 
 @app.route('/')
 def home():
-    return "✅ Market Indices API with Firestore is Running!"
+    return "✅ Batch Market Indices API is Running!"
 
 @app.route('/update-market-indices')
 def manual_update():
     try:
-        update_market_data()
+        fetch_all_indices()
         return jsonify({"message": "✅ Market indices updated successfully!"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
