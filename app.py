@@ -7,6 +7,7 @@ from firebase_admin import credentials, firestore
 from flask import Flask, jsonify
 from flask_cors import CORS
 import yfinance as yf
+import pandas as pd  # Added for NaN handling
 
 app = Flask(__name__)
 CORS(app)
@@ -45,24 +46,34 @@ def update_market_data():
         index_data = {}
 
         for name, symbol in INDICES.items():
-            if symbol not in data:
-                print(f"❌ No data for {name} ({symbol})")
+            if symbol not in data or "Close" not in data[symbol]:
+                print(f"❌ No valid data for {name} ({symbol})")
                 continue
 
             history = data[symbol]["Close"]
-            if len(history) < 2:
+
+            # ✅ Handle Missing Data
+            if len(history) < 2 or pd.isna(history.iloc[-2]) or pd.isna(history.iloc[-1]):
+                print(f"❌ Insufficient or NaN data for {name} ({symbol})")
                 continue
 
             prev_close = history.iloc[-2]
             current_price = history.iloc[-1]
-            percent_change = ((current_price - prev_close) / prev_close) * 100 if prev_close != 0 else 0
+
+            # ✅ Fix NaN Issue in Percentage Change Calculation
+            percent_change = (
+                ((current_price - prev_close) / prev_close) * 100
+                if prev_close and prev_close > 0
+                else 0
+            )
 
             index_data[name] = {
                 "current_price": round(current_price, 2),
                 "percent_change": round(percent_change, 2),
-                "previous_close": round(prev_close, 2)
+                "previous_close": round(prev_close, 2),
             }
 
+            # ✅ Store in Firestore
             db.collection("market_indices").document(name).set(index_data[name])
 
         print("✅ Market data updated successfully:", index_data)
