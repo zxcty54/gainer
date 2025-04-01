@@ -47,9 +47,13 @@ def fetch_index_data(name, symbol, retries=3):
                 continue  # Retry
 
             # Extract close prices
+            if "Close" not in data or data["Close"].empty:
+                print(f"⚠️ No Close price data for {name} ({symbol})")
+                continue  # Retry
+
             history = data["Close"].dropna()
 
-            if len(history) < 2:
+            if history.empty or len(history) < 2:
                 print(f"⚠️ Insufficient data for {name} ({symbol})")
                 continue  # Retry
 
