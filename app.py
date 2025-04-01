@@ -7,7 +7,7 @@ from firebase_admin import credentials, firestore
 from flask import Flask, jsonify
 from flask_cors import CORS
 import yfinance as yf
-import pandas as pd  # Added for NaN handling
+import pandas as pd
 
 app = Flask(__name__)
 CORS(app)
@@ -33,55 +33,57 @@ INDICES = {
     "BANK NIFTY": "^NSEBANK"
 }
 
-# ✅ Reduce API Calls (Batch Request)
-def update_market_data():
-    try:
-        tickers = list(INDICES.values())
-        data = yf.download(tickers, period="2d", group_by="ticker", auto_adjust=True, progress=False)
+# ✅ Fetch Individual Market Data
+def fetch_index_data(name, symbol, retries=3):
+    for attempt in range(retries):
+        try:
+            print(f"🔄 Fetching {name} ({symbol}) - Attempt {attempt + 1}")
 
-        if data.empty:
-            print("❌ No data retrieved from Yahoo Finance")
-            return
+            # Fetch last 2 days of data
+            data = yf.download(symbol, period="2d", auto_adjust=True, progress=False)
 
-        index_data = {}
+            if data.empty:
+                print(f"❌ No data for {name} ({symbol})")
+                continue  # Retry
 
-        for name, symbol in INDICES.items():
-            if symbol not in data or "Close" not in data[symbol]:
-                print(f"❌ No valid data for {name} ({symbol})")
-                continue
+            # Extract close prices
+            history = data["Close"].dropna()
 
-            history = data[symbol]["Close"]
+            if len(history) < 2:
+                print(f"⚠️ Insufficient data for {name} ({symbol})")
+                continue  # Retry
 
-            # ✅ Handle Missing Data
-            if len(history) < 2 or pd.isna(history.iloc[-2]) or pd.isna(history.iloc[-1]):
-                print(f"❌ Insufficient or NaN data for {name} ({symbol})")
-                continue
-
+            # Calculate values
             prev_close = history.iloc[-2]
             current_price = history.iloc[-1]
+            percent_change = ((current_price - prev_close) / prev_close) * 100 if prev_close != 0 else 0
 
-            # ✅ Fix NaN Issue in Percentage Change Calculation
-            percent_change = (
-                ((current_price - prev_close) / prev_close) * 100
-                if prev_close and prev_close > 0
-                else 0
-            )
-
-            index_data[name] = {
+            # ✅ Store in Firestore
+            index_data = {
                 "current_price": round(current_price, 2),
                 "percent_change": round(percent_change, 2),
                 "previous_close": round(prev_close, 2),
+                "last_updated": firestore.SERVER_TIMESTAMP  # Add timestamp
             }
 
-            # ✅ Store in Firestore
-            db.collection("market_indices").document(name).set(index_data[name])
+            db.collection("market_indices").document(name).set(index_data)
+            print(f"✅ {name} updated successfully: {index_data}")
+            return
 
-        print("✅ Market data updated successfully:", index_data)
+        except Exception as e:
+            print(f"⚠️ Error fetching {name} ({symbol}): {str(e)}")
+        
+        time.sleep(2)  # Wait before retrying
 
-    except Exception as e:
-        print("❌ Error updating market data:", str(e))
+    print(f"❌ Failed to fetch {name} after {retries} attempts")
 
-    # ✅ Reduce Frequency (Run Every 5 Minutes Instead of 15s)
+# ✅ Update Market Data
+def update_market_data():
+    print("🔄 Updating Market Indices...")
+    for name, symbol in INDICES.items():
+        fetch_index_data(name, symbol)
+    
+    # ✅ Run every 5 minutes
     threading.Timer(300, update_market_data).start()
 
 # ✅ Start Background Update Task
